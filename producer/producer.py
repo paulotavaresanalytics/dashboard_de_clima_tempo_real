@@ -74,4 +74,69 @@ def buscar_clima(cidade):
 
     return evento
 
-print(buscar_clima("London"))
+def publicar_evento(evento):
+    """
+    Publica um evento (dicionário) no tópico do Kafka.
+    """
+
+    # O Kafka não entende dicionários Python — ele trafega dados como
+    # bytes. Primeiro convertemos o dicionário em uma string JSON
+    # (json.dumps faz essa conversão: dict -> texto no formato JSON).
+    valor_json = json.dumps(evento)
+
+    # confluent_kafka exige que o "value" seja bytes, não string.
+    # .encode("utf-8") converte a string JSON em bytes.
+    valor_bytes = valor_json.encode("utf-8")
+
+    # Publica a mensagem no tópico. O parâmetro "value" é o conteúdo
+    # do evento; poderíamos também usar "key" pra definir uma chave
+    # de particionamento, mas não é necessário aqui (1 partição só).
+    producer.produce(topic=TOPIC_NAME, value=valor_bytes)
+
+    # Força o envio imediato da mensagem pro broker, em vez de deixar
+    # bufferizada. flush() bloqueia até confirmar que foi entregue —
+    # simples de entender e suficiente pro volume desse projeto.
+    producer.flush()
+
+    # Log simples pra você acompanhar no terminal o que está sendo publicado.
+    print(f"Evento publicado: {evento}")
+
+def main():
+    """
+    Loop principal: busca o clima de cada cidade e publica,
+    repetindo a cada INTERVALO segundos.
+    """
+    # "while True" cria um loop infinito — o script fica rodando
+    # continuamente até você interrompê-lo manualmente (Ctrl+C)
+    # ou o processo ser encerrado.
+    while True:
+
+        # Percorre cada cidade da lista definida lá na configuração.
+        for cidade in CIDADES:
+
+            # Chama a função que busca os dados na API do OpenWeather.
+            evento = buscar_clima(cidade)
+
+            # buscar_clima retorna None quando algo deu errado
+            # (status diferente de 200, erro de conexão, etc).
+            # Só publicamos se o evento realmente veio preenchido —
+            # isso evita que o script quebre tentando publicar "nada".
+            if evento is not None:
+                publicar_evento(evento)
+            else:
+                print(f"Pulando publicacao para {cidade} (erro na coleta)")
+
+        # Depois de passar por todas as cidades, o script "dorme"
+        # pelo tempo definido em INTERVALO (60 segundos, no seu caso)
+        # antes de repetir o ciclo inteiro de novo.
+        print(f"Aguardando {INTERVALO} segundos ate a proxima coleta...\n")
+        time.sleep(INTERVALO)
+
+
+# Esse "if" é um padrão do Python: o código dentro dele só roda
+# quando o arquivo é executado diretamente (python producer/producer.py).
+# Se, no futuro, você importar funções deste arquivo em outro script
+# (ex: reaproveitar buscar_clima no consumer), o loop main() não vai
+# disparar sozinho sem você chamar explicitamente.
+if __name__ == "__main__":
+    main()
