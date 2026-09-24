@@ -4,6 +4,7 @@ import os
 import json
 from confluent_kafka import Consumer
 from dotenv import load_dotenv
+import csv
 
 # Carrega variáveis do .env (mesmo padrão do producer, mesmo que o
 # consumer ainda não use nenhuma chave de API — mantemos consistência).
@@ -15,6 +16,13 @@ TOPIC_NAME = "clima-eventos"
 
 # Mesmo endereço do broker usado no producer.
 BOOTSTRAP_SERVERS = "localhost:9092"
+
+# Caminho do arquivo CSV, dentro da pasta "data" na raiz do projeto.
+CSV_PATH = "data/clima_eventos.csv"
+
+# Nomes das colunas do CSV, na mesma ordem dos campos do dicionário
+# "evento" que vem do producer (cidade, temperatura, umidade, etc).
+CAMPOS = ["cidade", "temperatura", "umidade", "descricao", "timestamp"]
 
 # O "group.id" identifica um GRUPO de consumers. O Kafka usa isso pra
 # saber até onde cada grupo já leu (offset). Se você rodar dois
@@ -38,6 +46,36 @@ consumer = Consumer({
 # um único tópico — a API permite se inscrever em vários ao mesmo tempo.
 consumer.subscribe([TOPIC_NAME])
 
+def salvar_evento_csv(evento):
+    """
+    Salva um evento no arquivo CSV, adicionando uma nova linha.
+    Cria o arquivo com cabeçalho, caso ainda não exista.
+    """
+
+    # Garante que a pasta "data" existe antes de tentar escrever nela.
+    # exist_ok=True evita erro caso a pasta já exista.
+    os.makedirs(os.path.dirname(CSV_PATH), exist_ok=True)
+
+    # Verifica se o arquivo já existe ANTES de abrir — isso decide se
+    # precisamos escrever o cabeçalho (só na primeira vez).
+    arquivo_existe = os.path.exists(CSV_PATH)
+
+    # Abre em modo "a" (append) — adiciona no final do arquivo, sem
+    # apagar o que já foi salvo antes. newline="" evita linhas em
+    # branco extras no Windows/alguns ambientes.
+    with open(CSV_PATH, mode="a", newline="", encoding="utf-8") as arquivo:
+
+        # DictWriter permite escrever diretamente a partir de um
+        # dicionário, usando as chaves que batem com CAMPOS.
+        writer = csv.DictWriter(arquivo, fieldnames=CAMPOS)
+
+        # Se o arquivo é novo, escreve a linha de cabeçalho primeiro
+        # (nomes das colunas), antes de qualquer dado.
+        if not arquivo_existe:
+            writer.writeheader()
+
+        # Escreve a linha do evento propriamente dita.
+        writer.writerow(evento)
 
 def main():
     """
@@ -74,6 +112,7 @@ def main():
             # No próximo passo (persistência), vamos salvar isso em
             # CSV ou SQLite em vez de só imprimir.
             print(f"Evento recebido: {evento}")
+            salvar_evento_csv(evento)
 
     except KeyboardInterrupt:
         # Permite encerrar o script com Ctrl+C de forma limpa,
