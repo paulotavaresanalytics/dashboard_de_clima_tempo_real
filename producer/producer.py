@@ -11,6 +11,12 @@ from dotenv import load_dotenv
 load_dotenv()
 API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
+if not API_KEY:
+    raise RuntimeError(
+        "OPENWEATHER_API_KEY não encontrada. "
+        "Configure a variável no arquivo .env ou no ambiente."
+    )
+
 TOPIC_NAME = "clima-eventos"
 BOOTSTRAP_SERVERS = "localhost:9092" 
 
@@ -47,7 +53,21 @@ def buscar_clima(cidade):
     }
 
     # Faz a chamada HTTP GET. O requests já une url + params automaticamente.
-    resposta = requests.get(url, params=params)
+    try:
+        resposta = requests.get(
+            url,
+            params=params,
+            timeout=10
+        )
+        resposta.raise_for_status()
+
+    except requests.exceptions.Timeout:
+        print(f"Timeout ao consultar clima de {cidade}")
+        return None
+
+    except requests.exceptions.RequestException as erro:
+        print(f"Erro ao consultar {cidade}: {erro}")
+        return None
 
     # status_code 200 = sucesso. Qualquer outro valor indica problema
     # (401 = chave inválida, 404 = cidade não encontrada, etc — foi o
