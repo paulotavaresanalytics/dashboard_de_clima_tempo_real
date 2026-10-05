@@ -105,8 +105,19 @@ def main():
             # volta pra string e depois converter de JSON pra dict
             # (processo inverso do que o producer fez).
             valor_bytes = msg.value()
-            valor_json = valor_bytes.decode("utf-8")
-            evento = json.loads(valor_json)
+            try:
+                valor_json = valor_bytes.decode("utf-8")
+                evento = json.loads(valor_json)
+
+            except UnicodeDecodeError as erro:
+                print(f"ERRO: mensagem não pôde ser convertida para texto: {erro}")
+                continue
+
+            except json.JSONDecodeError as erro:
+                print("ERRO: mensagem recebida não é um JSON válido.")
+                print(f"Conteúdo recebido: {valor_bytes}")
+                print(f"Detalhes: {erro}")
+                continue
 
             # Por enquanto, só exibimos o evento recebido no terminal.
             # No próximo passo (persistência), vamos salvar isso em
