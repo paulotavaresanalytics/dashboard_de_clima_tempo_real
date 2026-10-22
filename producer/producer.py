@@ -2,6 +2,7 @@
 
 import os
 import time
+import random
 import json
 import requests
 import confluent_kafka
@@ -25,6 +26,10 @@ CIDADES = [
     "Dubai",
     "Rio de Janeiro",
 ]
+
+MAX_TENTATIVAS = 3
+BACKOFF_BASE = 1.0
+BACKOFF_MAX = 10.0
 
 INTERVALO = 60 #Intervalos em segundos a cada coleta
 
@@ -52,29 +57,34 @@ def buscar_clima(cidade):
         "units": "metric",  # pra vir em Celsius, não Kelvin (padrão da API)
     }
 
-    # Faz a chamada HTTP GET. O requests já une url + params automaticamente.
-    try:
-        resposta = requests.get(
-            url,
-            params=params,
-            timeout=10
-        )
-        resposta.raise_for_status()
+    # Repete apenas falhas transitorias, com limite de tentativas.
+    for tentativa in range(1, MAX_TENTATIVAS + 1):
+        try:
+            resposta = requests.get(url, params=params, timeout=10)
+            resposta.raise_for_status()
+            break
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError) as erro:
+            motivo = type(erro).__name__
+        except requests.exceptions.HTTPError as erro:
+            status = erro.response.status_code if erro.response is not None else None
+            if status != 429 and (status is None or not 500 <= status < 600):
+                print(f"Erro HTTP {status} ao consultar {cidade}; sem retry.")
+                return None
+            motivo = f"HTTP {status}"
+        except requests.exceptions.RequestException:
+            # Nao imprime a excecao: ela pode conter a chave na URL.
+            print(f"Falha na requisicao de {cidade}; sem retry.")
+            return None
 
-    except requests.exceptions.Timeout:
-        print(f"Timeout ao consultar clima de {cidade}")
-        return None
-
-    except requests.exceptions.RequestException as erro:
-        print(f"Erro ao consultar {cidade}: {erro}")
-        return None
-
-    # status_code 200 = sucesso. Qualquer outro valor indica problema
-    # (401 = chave inválida, 404 = cidade não encontrada, etc — foi o
-    # mesmo 401 que você viu no curl antes da chave ativar).
-    if resposta.status_code != 200:
-        print(f"Erro ao buscar clima de {cidade}: {resposta.status_code} - {resposta.text}")
-        return None  # sinaliza pro chamador que não deu certo
+        if tentativa == MAX_TENTATIVAS:
+            print(f"Falha ao consultar {cidade} apos {tentativa} tentativas ({motivo}).")
+            return None
+        espera = min(BACKOFF_MAX, BACKOFF_BASE * 2 ** (tentativa - 1)
+                     + random.uniform(0, 0.5))
+        print(f"{cidade}: {motivo}; tentativa {tentativa}/{MAX_TENTATIVAS}, "
+              f"nova consulta em {espera:.2f}s.")
+        time.sleep(espera)
 
     # Converte o corpo da resposta (JSON em texto) em um dicionário Python.
     dados = resposta.json()
