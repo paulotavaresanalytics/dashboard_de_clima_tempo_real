@@ -1,0 +1,36 @@
+name: Importar CSVs históricos no Supabase
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "results/*.csv"
+      - "results/**/*.csv"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  importar:
+    name: Importar arquivos de clima
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Baixar o repositório
+        uses: actions/checkout@v7
+
+      - name: Configurar Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Instalar Psycopg
+        run: python -m pip install "psycopg[binary]==3.3.6"
+
+      - name: Importar arquivos em results/
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/import_results.py
