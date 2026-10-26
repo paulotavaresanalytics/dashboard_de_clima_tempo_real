@@ -1,6 +1,9 @@
+import csv
 import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import psycopg
 from confluent_kafka import Consumer
@@ -13,6 +16,8 @@ TOPIC_NAME = "clima-eventos"
 BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 GROUP_ID = "clima-consumer-group"
 DATABASE_URL = os.getenv("DATABASE_URL")
+RESULTS_DIR = Path(__file__).resolve().parents[1] / "results"
+CSV_FIELDS = ["cidade", "temperatura", "umidade", "descricao", "timestamp"]
 
 if not DATABASE_URL:
     raise RuntimeError(
@@ -60,28 +65,55 @@ def preparar_tabela() -> None:
         )
 
 
+def timestamp_utc(valor: object) -> datetime:
+    return datetime.fromtimestamp(float(valor), tz=timezone.utc)
+
+
 def salvar_evento(conexao: psycopg.Connection, evento: dict) -> None:
-    """Persiste um evento no PostgreSQL remoto."""
-    coletado_em = datetime.fromtimestamp(
-        float(evento["timestamp"]),
-        tz=timezone.utc,
-    )
+    """Persiste um evento no PostgreSQL sem duplicar uma reentrega do Kafka."""
+    coletado_em = timestamp_utc(evento["timestamp"])
+    cidade = str(evento["cidade"])
 
     conexao.execute(
         """
         INSERT INTO public.clima_eventos
             (cidade, temperatura, umidade, descricao, coletado_em)
-        VALUES (%s, %s, %s, %s, %s)
+        SELECT %s, %s, %s, %s, %s
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM public.clima_eventos
+            WHERE cidade = %s AND coletado_em = %s
+        )
         """,
         (
-            str(evento["cidade"]),
+            cidade,
             float(evento["temperatura"]),
             int(evento["umidade"]),
             str(evento["descricao"]),
             coletado_em,
+            cidade,
+            coletado_em,
         ),
     )
     conexao.commit()
+
+
+def salvar_csv(evento: dict) -> Path:
+    """Acrescenta o evento ao CSV do dia, usando a data de São Paulo."""
+    horario_local = timestamp_utc(evento["timestamp"]).astimezone(
+        ZoneInfo("America/Sao_Paulo")
+    )
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    caminho = RESULTS_DIR / f"clima_eventos_{horario_local:%Y-%m-%d}.csv"
+    precisa_cabecalho = not caminho.exists() or caminho.stat().st_size == 0
+
+    with caminho.open("a", newline="", encoding="utf-8") as arquivo:
+        writer = csv.DictWriter(arquivo, fieldnames=CSV_FIELDS)
+        if precisa_cabecalho:
+            writer.writeheader()
+        writer.writerow({campo: evento[campo] for campo in CSV_FIELDS})
+
+    return caminho
 
 
 def main() -> None:
@@ -108,9 +140,10 @@ def main() -> None:
                     continue
 
                 salvar_evento(conexao, evento)
+                caminho_csv = salvar_csv(evento)
                 consumer.commit(message=msg, asynchronous=False)
                 print(
-                    f"Evento salvo no Supabase: {evento.get('cidade', 'cidade desconhecida')}"
+                    f"Evento salvo no Supabase e exportado para {caminho_csv.name}"
                 )
 
     except KeyboardInterrupt:
