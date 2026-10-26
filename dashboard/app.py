@@ -1,8 +1,12 @@
-from pathlib import Path
+import os
 
 import pandas as pd
+import psycopg
 import streamlit as st
+from dotenv import load_dotenv
 
+
+load_dotenv()
 
 st.set_page_config(
     page_title="Clima em tempo real",
@@ -10,61 +14,88 @@ st.set_page_config(
     layout="wide",
 )
 
-CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "clima_eventos.csv"
-COLUNAS_ESPERADAS = ["cidade", "temperatura", "umidade", "descricao", "timestamp"]
+LIMITE_EVENTOS = 5000
 
 
-@st.cache_data(ttl=5)
-def carregar_eventos(caminho: str) -> pd.DataFrame:
-    """Lê o CSV que o consumer grava na pasta data/."""
-    dados = pd.read_csv(caminho)
+def obter_database_url() -> str | None:
+    """Usa Secrets no Streamlit Cloud e .env no desenvolvimento local."""
+    try:
+        database_url = st.secrets.get("DATABASE_URL")
+    except Exception:
+        database_url = None
+    return database_url or os.getenv("DATABASE_URL")
 
-    faltantes = set(COLUNAS_ESPERADAS) - set(dados.columns)
-    if faltantes:
-        raise ValueError(
-            "O CSV não contém as colunas esperadas: " + ", ".join(sorted(faltantes))
-        )
 
-    dados = dados[COLUNAS_ESPERADAS].copy()
+@st.cache_data(ttl=10, show_spinner=False)
+def carregar_eventos(database_url: str) -> pd.DataFrame:
+    """Busca no máximo 5.000 eventos dos últimos 30 dias."""
+    with psycopg.connect(database_url, connect_timeout=10) as conexao:
+        with conexao.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT cidade, temperatura, umidade, descricao, coletado_em
+                FROM public.clima_eventos
+                WHERE coletado_em >= now() - interval '30 days'
+                ORDER BY coletado_em DESC
+                LIMIT %s
+                """,
+                (LIMITE_EVENTOS,),
+            )
+            registros = cursor.fetchall()
+
+    dados = pd.DataFrame(
+        registros,
+        columns=["cidade", "temperatura", "umidade", "descricao", "coletado_em"],
+    )
+    if dados.empty:
+        return dados
+
     dados["temperatura"] = pd.to_numeric(dados["temperatura"], errors="coerce")
     dados["umidade"] = pd.to_numeric(dados["umidade"], errors="coerce")
-    timestamp_unix = pd.to_numeric(dados["timestamp"], errors="coerce")
     dados["horario"] = (
-        pd.to_datetime(timestamp_unix, unit="s", utc=True, errors="coerce")
+        pd.to_datetime(dados["coletado_em"], utc=True, errors="coerce")
         .dt.tz_convert("America/Sao_Paulo")
     )
     dados["cidade"] = dados["cidade"].astype("string").str.strip()
     dados["descricao"] = dados["descricao"].astype("string").str.strip()
-
-    dados = dados.dropna(subset=["cidade", "temperatura", "umidade", "horario"])
+    dados = dados.dropna(
+        subset=["cidade", "temperatura", "umidade", "horario"]
+    )
     return dados.sort_values("horario", ascending=False)
 
 
 st.title("🌦️ Clima em tempo real")
 st.caption(
-    "Leituras de temperatura e umidade coletadas pelo producer, "
-    "publicadas no Kafka e gravadas pelo consumer em CSV."
+    "Dados publicados no Kafka, gravados pelo consumer no Supabase "
+    "e atualizados aqui automaticamente."
 )
 
 
 @st.fragment(run_every="15s")
 def exibir_painel() -> None:
-    if not CSV_PATH.exists():
-        st.info(
-            f"Ainda não encontrei o arquivo {CSV_PATH.relative_to(CSV_PATH.parents[1])}. "
-            "Inicie o Kafka e o consumer; os dados aparecerão aqui assim que "
-            "o consumer gravar o primeiro evento."
+    database_url = obter_database_url()
+    if not database_url:
+        st.error(
+            "Falta configurar DATABASE_URL em App settings → Secrets. "
+            "Use a URI PostgreSQL do Supabase no formato TOML."
         )
         return
 
     try:
-        dados = carregar_eventos(str(CSV_PATH))
-    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError, ValueError) as erro:
-        st.error(f"Não foi possível ler os dados do consumer: {erro}")
+        dados = carregar_eventos(database_url)
+    except Exception as erro:
+        st.error(
+            "Não consegui consultar public.clima_eventos no Supabase. "
+            "Confira se DATABASE_URL está configurada e se a tabela existe."
+        )
+        st.caption(f"Tipo do erro: {type(erro).__name__}")
         return
 
     if dados.empty:
-        st.info("O CSV ainda não contém leituras válidas.")
+        st.info(
+            "Ainda não há eventos dos últimos 30 dias. "
+            "Inicie o Kafka e o consumer configurado com a mesma DATABASE_URL."
+        )
         return
 
     cidades = sorted(dados["cidade"].dropna().unique().tolist())
@@ -138,8 +169,8 @@ def exibir_painel() -> None:
     )
 
     st.caption(
-        f"Arquivo: {CSV_PATH} · Atualização automática a cada 15 segundos · "
-        f"{len(filtrados)} eventos no arquivo."
+        f"Consulta limitada aos últimos 30 dias e até {LIMITE_EVENTOS:,} eventos. "
+        "Atualização automática a cada 15 segundos."
     )
 
 
