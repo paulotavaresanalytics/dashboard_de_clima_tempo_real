@@ -1,50 +1,52 @@
 # Dashboard de Clima em Tempo Real
 
-Pipeline de streaming de dados climáticos com Kafka. Um producer coleta
-dados de clima via API pública e publica eventos no Kafka; um consumer lê
-esses eventos e os persiste em CSV, alimentando um dashboard em tempo real.
-
-Kafka roda localmente via Docker (Confluent Platform Community), sem
-dependência de serviços pagos.
+Pipeline de streaming de dados climáticos com Kafka e PostgreSQL hospedado no Supabase. O producer coleta dados da API OpenWeather e publica eventos no Kafka local; o consumer grava as leituras no banco remoto; o dashboard Streamlit consulta o PostgreSQL.
 
 ## Arquitetura
 
 ```
-OpenWeather API → Producer → Kafka → Consumer → CSV → Dashboard
+OpenWeather API → Producer → Kafka local → Consumer → Supabase PostgreSQL → Streamlit Cloud
 ```
 
 ## Status
 
-**Concluído**
-- Kafka local (Docker, modo KRaft) com o tópico `clima-eventos`
-- Producer: coleta e publica dados de clima por cidade
-- Consumer: lê os eventos e salva em `data/clima_eventos.csv`
+- Kafka local via Docker Compose (modo KRaft), tópico `clima-eventos`
+- Producer: coleta dados de clima por cidade
+- Consumer: persiste os eventos recebidos na tabela `public.clima_eventos`
+- Dashboard: lê temperatura, umidade, descrição e horário no Supabase
 
-**Em andamento**
-- Tratamento de erros e reconexão no consumer
-- Dashboard em Streamlit
-- Documentação de variáveis de ambiente (`.env.example`)
+O consumer cria a tabela e o índice se ainda não existirem. Ele habilita RLS e remove permissões das roles `anon` e `authenticated`; o acesso do consumer e do Streamlit usa a URI privada de PostgreSQL.
 
-## Como rodar
+## Configuração
+
+1. Crie um projeto Supabase.
+2. Copie a URI PostgreSQL em **Connect → Direct → Session pooler → URI → Python**.
+3. Copie `.env.example` para `.env` e preencha `OPENWEATHER_API_KEY` e `DATABASE_URL`.
+4. No app Streamlit, salve a mesma URI nos **Secrets**:
+
+```toml
+DATABASE_URL = "sua_uri_postgresql_do_supabase"
+```
+
+Nunca envie `.env` ou a URI de conexão ao GitHub. O arquivo `.env` deve permanecer ignorado pelo Git.
+
+## Como rodar localmente
 
 ```bash
-# 1. Subir o Kafka
 docker compose up -d
-
-# 2. Ambiente Python
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
-# 3. Configurar .env
-echo "OPENWEATHER_API_KEY=sua_chave_aqui" > .env
-
-# 4. Executar
 python producer/producer.py
-python consumer/consumer.py   # em outro terminal
+python consumer/consumer.py
 ```
+
+O producer e o consumer rodam em terminais separados. O Kafka continua local; o Supabase é o armazenamento remoto compartilhado com o Streamlit Cloud.
+
+## Limites do dashboard
+
+O dashboard consulta somente os últimos 30 dias e no máximo 5.000 eventos por atualização. Isso limita a leitura por consulta; a retenção do banco ainda precisa ser administrada separadamente.
 
 ## Stack
 
-Apache Kafka (Confluent Platform Community) · Python · OpenWeather API ·
-GitHub Codespaces
+Apache Kafka · Python · Psycopg 3 · PostgreSQL (Supabase) · OpenWeather API · Streamlit
